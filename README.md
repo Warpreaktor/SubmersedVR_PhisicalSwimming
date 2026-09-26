@@ -81,6 +81,89 @@ Music can be organized into subfolders. When the mod starts, it scans the librar
 
 ---
 
+# Controls
+
+Movement controls change depending on whether the player is in the water or on land. When **Physical Swimming** is enabled, normal stick-based underwater movement is disabled and replaced with physical hand movements.
+
+## 1. In the water
+
+### Movement
+
+- **Swimming forward, backward, and sideways** is performed using real hand strokes.
+- The faster and stronger the stroke, the greater the impulse applied to the player.
+- Momentum is preserved after a stroke, so you do not need to constantly move your arms to maintain speed.
+- **The left stick is not used for normal underwater movement** while Physical Swimming is enabled.
+
+### Turning
+
+- Turning is performed using **sideways hand strokes** or by turning your head.
+- Turning strength depends on the **Turn Strength** setting.
+- At `Turn Strength = 0`, sideways strokes do not rotate the player and only move the player laterally.
+- **The right stick is disabled for underwater turning** while Physical Swimming is active.
+
+### Fin Kick
+
+- **Hold Left Grip + Right Grip at the same time** to activate Fin Kick.
+- The player receives additional thrust in the direction they are looking.
+- Fin Kick can be used together with hand strokes: their speeds are added together.
+- Thrust strength is controlled by the **Fin Kick Strength** setting.
+
+### Fast ascent
+
+- Lower both hands and extend them down alongside your body.
+- While the gesture is held, the player starts moving upward.
+
+### Fast descent
+
+- Raise both hands above you.
+- Your palms should face each other.
+- While the gesture is held, the player starts moving downward.
+
+### Braking
+
+- Hold both hands in front of you as if you were pushing your palms against an invisible wall.
+- This gesture is used for active braking and reducing accumulated momentum.
+
+### Seaglide
+
+When the Seaglide is being held, normal physical swimming is temporarily disabled: hand strokes, Fin Kick, ascent/descent gestures, and physical turning no longer control the player.
+
+- Movement direction is determined by the **direction of the Seaglide itself**, not by the direction of your head.
+- **Left Grip + Right Grip** control motor thrust.
+- Each Grip contributes part of the motor power, making the thrust analog.
+- Fully pressing both Grip buttons runs the motor at full power.
+- After releasing the Grip buttons, motor thrust stops, but your current speed is not reset instantly: the player continues moving due to inertia.
+
+---
+
+## 2. On land and inside bases
+
+### Movement
+
+- **Left stick** — walk forward/backward and move sideways.
+
+### Turning
+
+- **Right stick** — turn the player.
+- Uses the standard SubmersedVR VR turning mechanic.
+
+### Jumping
+
+- **Press Left Grip + Right Grip at the same time** — jump.
+- These are the same two buttons used for Fin Kick while in the water.
+
+The controls automatically change depending on the player's current state:
+
+```text
+In the water:
+Left Grip + Right Grip → Fin Kick
+
+On land / inside bases:
+Left Grip + Right Grip → Jump
+```
+
+---
+
 ## Settings
 
 ### Physical Swimming
