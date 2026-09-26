@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.InteropServices;
 using HarmonyLib;
 using UnityEngine;
 
@@ -39,6 +40,163 @@ namespace SubmersedVR
             }
             return SteamVR_Actions.subnautica.UIScroll.GetAxis(SteamVR_Input_Sources.Any);
         }
+
+        public static void GetFinKickGripState(out bool leftGripHeld, out bool rightGripHeld)
+        {
+            leftGripHeld = false;
+            rightGripHeld = false;
+
+            if (!IsSteamVrReady || InputLocked)
+            {
+                return;
+            }
+
+            // Current SubmersedVR bindings map the lower/middle-finger grip controls to
+            // MoveDown on the left hand and MoveUp on the right hand. Query each action from
+            // its specific input source so holding both grips can be recognized unambiguously.
+            leftGripHeld = SteamVR_Actions.subnautica.MoveDown.GetState(SteamVR_Input_Sources.LeftHand);
+            rightGripHeld = SteamVR_Actions.subnautica.MoveUp.GetState(SteamVR_Input_Sources.RightHand);
+        }
+
+        private const string LeftGripAnalogActionPath = "/actions/subnautica/in/LeftGripAnalog";
+        private const string RightGripAnalogActionPath = "/actions/subnautica/in/RightGripAnalog";
+        private const float SkeletonGripFallbackDeadZone = 0.33f;
+        private static ulong leftGripAnalogActionHandle;
+        private static ulong rightGripAnalogActionHandle;
+
+        public static void GetSeaglideGripAnalog(out float leftGrip, out float rightGrip)
+        {
+            leftGrip = 0f;
+            rightGrip = 0f;
+
+            if (!IsSteamVrReady || InputLocked)
+            {
+                return;
+            }
+
+            // Read the physical Oculus/SteamVR grip axis directly. Skeleton finger curls are a
+            // hand-pose estimate, not a grip axis; using them as throttle caused low-level motor
+            // creep when the hand/tool orientation changed even though the user was not squeezing.
+            bool leftAnalogAvailable = TryReadAnalogAction(
+                LeftGripAnalogActionPath,
+                ref leftGripAnalogActionHandle,
+                out leftGrip
+            );
+            bool rightAnalogAvailable = TryReadAnalogAction(
+                RightGripAnalogActionPath,
+                ref rightGripAnalogActionHandle,
+                out rightGrip
+            );
+
+            if (leftAnalogAvailable && rightAnalogAvailable)
+            {
+                return;
+            }
+
+            // Keep a degraded fallback for runtimes/controllers without the new scalar bindings.
+            // Telemetry from Oculus Touch showed orientation-related skeleton values reaching ~0.30
+            // with no intended throttle, so the fallback deliberately ignores the lower third.
+            bool leftGripHeld = SteamVR_Actions.subnautica.MoveDown.GetState(SteamVR_Input_Sources.LeftHand);
+            bool rightGripHeld = SteamVR_Actions.subnautica.MoveUp.GetState(SteamVR_Input_Sources.RightHand);
+
+            if (!leftAnalogAvailable)
+            {
+                leftGrip = ReadSkeletonGripFallback("LeftHandSkeleton", leftGripHeld);
+            }
+
+            if (!rightAnalogAvailable)
+            {
+                rightGrip = ReadSkeletonGripFallback("RightHandSkeleton", rightGripHeld);
+            }
+        }
+
+        private static bool TryReadAnalogAction(string actionPath, ref ulong actionHandle, out float value)
+        {
+            value = 0f;
+
+            if (OpenVR.Input == null)
+            {
+                return false;
+            }
+
+            if (actionHandle == 0UL)
+            {
+                EVRInputError handleError = OpenVR.Input.GetActionHandle(actionPath, ref actionHandle);
+                if (handleError != EVRInputError.None || actionHandle == 0UL)
+                {
+                    actionHandle = 0UL;
+                    return false;
+                }
+            }
+
+            InputAnalogActionData_t actionData = new InputAnalogActionData_t();
+            uint actionDataSize = (uint)Marshal.SizeOf(typeof(InputAnalogActionData_t));
+            EVRInputError readError = OpenVR.Input.GetAnalogActionData(
+                actionHandle,
+                ref actionData,
+                actionDataSize,
+                0UL
+            );
+
+            if (readError != EVRInputError.None || !actionData.bActive)
+            {
+                return false;
+            }
+
+            value = Mathf.Clamp01(actionData.x);
+            return true;
+        }
+
+        private static float ReadSkeletonGripFallback(string actionName, bool booleanFallback)
+        {
+            SteamVR_Action_Skeleton skeleton = SteamVR_Input.GetSkeletonAction(actionName);
+            if (skeleton == null)
+            {
+                return booleanFallback ? 1f : 0f;
+            }
+
+            float grip = Mathf.Clamp01(
+                (skeleton.middleCurl + skeleton.ringCurl + skeleton.pinkyCurl) / 3f
+            );
+
+            if (grip <= SkeletonGripFallbackDeadZone)
+            {
+                return 0f;
+            }
+
+            return Mathf.InverseLerp(SkeletonGripFallbackDeadZone, 1f, grip);
+        }
+
+        public static bool TryGetLandGripJumpState(out bool held, out bool down, out bool up)
+        {
+            held = false;
+            down = false;
+            up = false;
+
+            if (!IsSteamVrReady || InputLocked || !PhysicalSwimming.CanUseLandGripJump)
+            {
+                return false;
+            }
+
+            var leftGrip = SteamVR_Actions.subnautica.MoveDown;
+            var rightGrip = SteamVR_Actions.subnautica.MoveUp;
+
+            bool leftHeld = leftGrip.GetState(SteamVR_Input_Sources.LeftHand);
+            bool rightHeld = rightGrip.GetState(SteamVR_Input_Sources.RightHand);
+            held = leftHeld && rightHeld;
+
+            down = held && (
+                leftGrip.GetStateDown(SteamVR_Input_Sources.LeftHand)
+                || rightGrip.GetStateDown(SteamVR_Input_Sources.RightHand)
+            );
+
+            up = !held && (
+                leftGrip.GetStateUp(SteamVR_Input_Sources.LeftHand)
+                || rightGrip.GetStateUp(SteamVR_Input_Sources.RightHand)
+            );
+
+            return true;
+        }
     }
 
     // Implement Snap turning for the player
@@ -47,6 +205,13 @@ namespace SubmersedVR
     {
         public static void Postfix(ref Vector2 __result)
         {
+            if (PhysicalSwimming.ShouldSuppressNativeTurnInput)
+            {
+                __result = Vector2.zero;
+                SteamVrGameInput.SnapTurned = false;
+                return;
+            }
+
             bool isInVehicle = Player.main?.currentMountedVehicle != null;
             if (Settings.IsSnapTurningEnabled && !isInVehicle) {
                 float lookX = __result.x;
@@ -77,8 +242,19 @@ namespace SubmersedVR
                 return false;
             }
 
+            if (action == GameInput.Button.Jump
+                && SteamVrGameInput.TryGetLandGripJumpState(out _, out bool gripJumpDown, out _))
+            {
+                __result = gripJumpDown;
+                return false;
+            }
+
             String actionName = action.ToString();
             __result = SteamVR_Input.GetStateDown(actionName, SteamVR_Input_Sources.Any);
+            if (PhysicalSwimming.ShouldSuppressNativeSwimmingAction(action))
+            {
+                __result = false;
+            }
             return false;
         }
     }
@@ -93,8 +269,19 @@ namespace SubmersedVR
                 return false;
             }
 
+            if (action == GameInput.Button.Jump
+                && SteamVrGameInput.TryGetLandGripJumpState(out _, out _, out bool gripJumpUp))
+            {
+                __result = gripJumpUp;
+                return false;
+            }
+
             String actionName = action.ToString();
             __result = SteamVR_Input.GetStateUp(actionName, SteamVR_Input_Sources.Any);
+            if (PhysicalSwimming.ShouldSuppressNativeSwimmingAction(action))
+            {
+                __result = false;
+            }
             return false;
         }
     }
@@ -109,8 +296,20 @@ namespace SubmersedVR
                 return false;
             }
 
+            if (action == GameInput.Button.Jump
+                && SteamVrGameInput.TryGetLandGripJumpState(out bool gripJumpHeld, out _, out _))
+            {
+                __result = gripJumpHeld;
+                return false;
+            }
+
             String actionName = action.ToString();
-            __result = SteamVR_Input.GetState(actionName, SteamVR_Input_Sources.Any);
+            bool vanillaHeld = SteamVR_Input.GetState(actionName, SteamVR_Input_Sources.Any);
+            if (PhysicalSwimming.ShouldSuppressNativeSwimmingAction(action))
+            {
+                vanillaHeld = false;
+            }
+            __result = PhysicalSwimming.CombineButtonHeld(action, vanillaHeld);
             return false;
         }
     }
@@ -176,6 +375,11 @@ namespace SubmersedVR
                     value = isPressed ? 1.0f : 0.0f;
                     break;
                 case GameInput.Button.LookUp:
+                    if (PhysicalSwimming.ShouldSuppressNativeTurnInput)
+                    {
+                        value = 0f;
+                        break;
+                    }
                     vec = SteamVR_Actions.subnautica.Look.GetAxis(SteamVR_Input_Sources.Any);
                     if (Settings.InvertYAxis)
                     {
@@ -187,6 +391,11 @@ namespace SubmersedVR
                     }
                     break;
                 case GameInput.Button.LookDown:
+                    if (PhysicalSwimming.ShouldSuppressNativeTurnInput)
+                    {
+                        value = 0f;
+                        break;
+                    }
                     vec = SteamVR_Actions.subnautica.Look.GetAxis(SteamVR_Input_Sources.Any);
                     if (Settings.InvertYAxis)
                     {
@@ -198,16 +407,42 @@ namespace SubmersedVR
                     }
                     break;
                 case GameInput.Button.LookRight:
+                    if (PhysicalSwimming.ShouldSuppressNativeTurnInput)
+                    {
+                        value = 0f;
+                        break;
+                    }
                     vec = SteamVR_Actions.subnautica.Look.GetAxis(SteamVR_Input_Sources.Any);
                     value = vec.x > 0.0f ? vec.x : 0.0f;
                     break;
                 case GameInput.Button.LookLeft:
+                    if (PhysicalSwimming.ShouldSuppressNativeTurnInput)
+                    {
+                        value = 0f;
+                        break;
+                    }
                     vec = SteamVR_Actions.subnautica.Look.GetAxis(SteamVR_Input_Sources.Any);
                     value = vec.x < 0.0f ? -vec.x : 0.0f;
                     break;
             }
 
-            __result = Mathf.Clamp(value, -1.0f, 1.0f);
+            value = PhysicalSwimming.CombineFloatInput(action, value);
+
+            // Stock controller input is limited to 1.0, but Physical Swimming deliberately lets
+            // Fin Kick add on top of the independently capped hand-swim input. Preserve that
+            // extra range for locomotion buttons instead of clipping 1.25/2.0 back to 1.0 here.
+            bool locomotionAction =
+                action == GameInput.Button.MoveForward
+                || action == GameInput.Button.MoveBackward
+                || action == GameInput.Button.MoveRight
+                || action == GameInput.Button.MoveLeft
+                || action == GameInput.Button.MoveUp
+                || action == GameInput.Button.MoveDown;
+
+            float limit = Settings.PhysicalSwimming && locomotionAction
+                ? PhysicalSwimming.GetCurrentCombinedInputLimit()
+                : 1f;
+            __result = Mathf.Clamp(value, -limit, limit);
 
             return false;
         }
@@ -227,6 +462,12 @@ namespace SubmersedVR
             switch (action)
             {
                 case GameInput.Button.Look:
+                    if (PhysicalSwimming.ShouldSuppressNativeTurnInput)
+                    {
+                        vec = Vector2.zero;
+                        break;
+                    }
+
                     vec = SteamVR_Actions.subnautica.Look.GetAxis(SteamVR_Input_Sources.Any);
 
                     // TODO: Add new setting
@@ -245,6 +486,7 @@ namespace SubmersedVR
                     break;
                 case GameInput.Button.Move:
                     vec = SteamVR_Actions.subnautica.Move.GetAxis(SteamVR_Input_Sources.Any);
+                    vec = PhysicalSwimming.CombineMoveAxis(vec);
                     break;
             }
 

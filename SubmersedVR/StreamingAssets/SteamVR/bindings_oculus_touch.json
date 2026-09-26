@@ -208,10 +208,22 @@
                "inputs" : {
                   "click" : {
                      "output" : "/actions/subnautica/in/builderrotateleft"
+                  },
+                  "pull" : {
+                     "output" : "/actions/subnautica/in/leftgripanalog"
                   }
                },
                "mode" : "trigger",
                "path" : "/user/hand/left/input/grip"
+            },
+            {
+               "inputs" : {
+                  "pull" : {
+                     "output" : "/actions/subnautica/in/rightgripanalog"
+                  }
+               },
+               "mode" : "trigger",
+               "path" : "/user/hand/right/input/grip"
             },
             {
                "inputs" : {

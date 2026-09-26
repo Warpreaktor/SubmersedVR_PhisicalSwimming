@@ -214,6 +214,16 @@
       "requirement": "mandatory"
     },
     {
+      "name": "/actions/subnautica/in/LeftGripAnalog",
+      "type": "vector1",
+      "requirement": "optional"
+    },
+    {
+      "name": "/actions/subnautica/in/RightGripAnalog",
+      "type": "vector1",
+      "requirement": "optional"
+    },
+    {
       "name": "/actions/subnautica/in/BuilderRotateRight",
       "type": "boolean",
       "requirement": "suggested"
@@ -299,6 +309,8 @@
       "/actions/subnautica/in/UISubmit": "Submit(UI)",
       "/actions/subnautica/in/MoveUp": "Move Up",
       "/actions/subnautica/in/MoveDown": "Move Down",
+      "/actions/subnautica/in/LeftGripAnalog": "Left Grip Analog",
+      "/actions/subnautica/in/RightGripAnalog": "Right Grip Analog",
       "/actions/subnautica/in/UILeft": "UI Go Left",
       "/actions/subnautica/in/UIRight": "UI Go Right",
       "/actions/subnautica/in/UIUp": "UI Go Up",

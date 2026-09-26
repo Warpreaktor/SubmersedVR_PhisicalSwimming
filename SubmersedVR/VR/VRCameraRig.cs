@@ -323,6 +323,7 @@ namespace SubmersedVR
             button.rectTransform.SetSizeWithCurrentAnchors(RectTransform.Axis.Vertical, 100);
             button.rectTransform.ForceUpdateRectTransforms();
             button.rectTransform.GetComponentsInChildren<RectTransform>().ForEach(rt => rt.ForceUpdateRectTransforms());
+
         }
 
         public IEnumerator SetupGameCameras()
@@ -343,7 +344,14 @@ namespace SubmersedVR
             // Right now if you move too far away from the center, you will rotate the camera with the center as a pivot.
             if (rigParentTarget != null)
             {
-                this.transform.SetPositionAndRotation(rigParentTarget.position, rigParentTarget.rotation);
+                Quaternion physicalYaw = Quaternion.AngleAxis(
+                    PhysicalSwimming.PhysicalYawOffsetDegrees,
+                    Vector3.up
+                );
+                this.transform.SetPositionAndRotation(
+                    rigParentTarget.position,
+                    physicalYaw * rigParentTarget.rotation
+                );
                 uiRig.transform.rotation = transform.rotation;
                 /*TODO
                                 RecenterBodyOnCameraOrientation(35f, 0.3f, 3.0f, 1.5f);  
@@ -386,6 +394,12 @@ namespace SubmersedVR
         public static Transform controllerTransform;
         static bool Prefix(PlayerController __instance, ref Transform __result)
         {
+            if (PhysicalSwimming.TryGetSeaglideMovementReference(out Transform seaglideReference))
+            {
+                __result = seaglideReference;
+                return false;
+            }
+
             if (Settings.HandBasedTurning)
             {
                 //Use the Camera's position and the laser pointer's rotation

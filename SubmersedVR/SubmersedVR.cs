@@ -4,6 +4,7 @@ using BepInEx.Logging;
 using HarmonyLib;
 using UnityEngine.XR;
 using System.Linq;
+using SubmersedVR.Music;
 
 namespace SubmersedVR
 {
@@ -63,6 +64,16 @@ namespace SubmersedVR
             VROptions.gazeBasedCursor = true;
 
             instance = this;
+
+            MusicPlayerSettings.InitializeLibraryPathOverride();
+            gameObject.AddComponent<MusicPlayerController>();
+        }
+
+        private void OnDestroy()
+        {
+            PhysicalSwimmingDebugRecorder.Stop();
+            MusicPlayerController.instance?.StopRadio();
+            GameMusicController.Restore();
         }
     }
 }

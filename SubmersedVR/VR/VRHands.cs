@@ -162,6 +162,10 @@ namespace SubmersedVR
         public Vector3[] maxRotation;
         public int currentEditFinger = (int)HandSkeletonBone.eBone_IndexFinger1;
 
+        private const string SeaglideLeftGripPath = "1st Person Model/Seaglide_rig/handLeft/left_hand_grip";
+
+        private Transform leftHandPoseOverride;
+
         // private OffsetCalibrationTool calibrationTool;
 
         public void Setup(FullBodyBipedIK ik)
@@ -341,8 +345,11 @@ namespace SubmersedVR
             rightElbow.transform.SetPositionAndRotation(rightHand.position, rightHand.rotation); // Reset Elbows
 #endif
 
-            leftHand.transform.SetPositionAndRotation(leftTarget.position, leftTarget.rotation);
+            // The Seaglide is attached to the right hand. Move the primary hand first so any
+            // support-hand anchor under the tool already has its final pose for this frame.
             rightHand.transform.SetPositionAndRotation(rightTarget.position, rightTarget.rotation);
+            Transform leftPoseTarget = GetLeftHandPoseTarget();
+            leftHand.transform.SetPositionAndRotation(leftPoseTarget.position, leftPoseTarget.rotation);
 
             // Reset Elbows
             leftElbow.transform.SetPositionAndRotation(leftHand.position, leftHand.rotation);
@@ -350,12 +357,21 @@ namespace SubmersedVR
             leftElbow.localScale = Vector3.zero;
             rightElbow.localScale = Vector3.zero;
 
+            bool supportHandPoseActive = IsLeftHandPoseOverrideActive();
+            if (supportHandPoseActive)
+            {
+                // A two-handed tool owns the visual pose of its support hand even when general
+                // articulated-hand tracking is disabled. Physical left-controller buttons remain
+                // untouched and continue to drive gameplay input.
+                ApplySeaglideSupportGripPose();
+            }
+
             if (Settings.ArticulatedHands)
             {
                 SteamVR_Action_Skeleton rightSkeletonAction = SteamVR_Input.GetSkeletonAction("RightHandSkeleton");
                 SteamVR_Action_Skeleton leftSkeletonAction = SteamVR_Input.GetSkeletonAction("LeftHandSkeleton");
 
-                if (!Player.main.pda.isOpen)
+                if (!Player.main.pda.isOpen && !supportHandPoseActive)
                 {
                     UpdateFinger(leftHandFingers, (int)HandSkeletonBone.eBone_PinkyFinger1, leftSkeletonAction.pinkyCurl);
                     UpdateFinger(leftHandFingers, (int)HandSkeletonBone.eBone_RingFinger1, leftSkeletonAction.ringCurl);
@@ -375,6 +391,27 @@ namespace SubmersedVR
 
             }
 
+        }
+
+        private Transform GetLeftHandPoseTarget()
+        {
+            return IsLeftHandPoseOverrideActive() ? leftHandPoseOverride : leftTarget;
+        }
+
+        private bool IsLeftHandPoseOverrideActive()
+        {
+            return leftHandPoseOverride != null
+                && leftHandPoseOverride.gameObject.activeInHierarchy
+                && (Player.main == null || Player.main.pda == null || !Player.main.pda.isOpen);
+        }
+
+        private void ApplySeaglideSupportGripPose()
+        {
+            UpdateFinger(leftHandFingers, (int)HandSkeletonBone.eBone_PinkyFinger1, 0.85f);
+            UpdateFinger(leftHandFingers, (int)HandSkeletonBone.eBone_RingFinger1, 0.85f);
+            UpdateFinger(leftHandFingers, (int)HandSkeletonBone.eBone_MiddleFinger1, 0.85f);
+            UpdateFinger(leftHandFingers, (int)HandSkeletonBone.eBone_IndexFinger1, 0.75f);
+            UpdateFinger(leftHandFingers, (int)HandSkeletonBone.eBone_Thumb1, 0.60f);
         }
 
         public void UpdateFinger(Transform[] fingers, int fingerID, float percent)
@@ -405,8 +442,45 @@ namespace SubmersedVR
 
         public void SetBodyRendering(bool val)
         {
-            var bodyRenderers = transform.GetComponentsInChildren<SkinnedMeshRenderer>().Where(r => r.name.Contains("body") || r.name.Contains("vest"));
-            bodyRenderers.ForEach(r => r.enabled = val);
+            SetFullBodyRendering(val && ShouldRenderFullBody());
+        }
+
+        private IEnumerable<SkinnedMeshRenderer> GetFullBodyRenderers()
+        {
+            return transform
+                .GetComponentsInChildren<SkinnedMeshRenderer>(includeInactive: true)
+                .Where(IsFullBodyRenderer);
+        }
+
+        private static bool IsFullBodyRenderer(SkinnedMeshRenderer renderer)
+        {
+            string rendererName = renderer.name.ToLowerInvariant();
+            return rendererName.Contains("body")
+                || rendererName.Contains("vest")
+                || rendererName.Contains("flipper");
+        }
+
+        private void SetFullBodyRendering(bool visible)
+        {
+            GetFullBodyRenderers().ForEach(renderer => renderer.enabled = visible);
+        }
+
+        private bool ShouldRenderFullBody()
+        {
+            return Settings.FullBody && !IsSeaglideHeld();
+        }
+
+        internal static bool IsSeaglideHeld()
+        {
+            Pickupable held = Inventory.main?.GetHeld();
+            return held != null && held.GetComponent<Seaglide>() != null;
+        }
+
+        private void RefreshBodyRendering(bool? seaglideHeldOverride = null)
+        {
+            bool seaglideHeld = seaglideHeldOverride ?? IsSeaglideHeld();
+            bool renderBody = Settings.FullBody && !seaglideHeld;
+            SetFullBodyRendering(renderBody);
         }
 
         IEnumerator UpdateBodyRendering()
@@ -414,11 +488,7 @@ namespace SubmersedVR
             while (true)
             {
                 //Mod.logger.LogInfo($"UpdateBodyRendering {Settings.FullBody}");
-                var bodyRenderers = transform.GetComponentsInChildren<SkinnedMeshRenderer>().Where(r => r.name.Contains("body") || r.name.Contains("vest"));
-                foreach (var bodyRenderer in bodyRenderers)
-                {
-                    bodyRenderer.enabled = Settings.FullBody;
-                }
+                RefreshBodyRendering();
 
                 // Fix culling of hands when full body is off
                 var handRenderers = transform.GetComponentsInChildren<SkinnedMeshRenderer>(includeInactive: true).Where(m => m.name.Contains("glove") || m.name.Contains("hands"));
@@ -435,9 +505,32 @@ namespace SubmersedVR
 
         internal void OnToolEquipped(PlayerTool tool)
         {
-            var aimOffset = tool.GetAimOffset();
-            VRCameraRig.instance.TargetTransform = aimOffset;
-            tool.GetHandOffset().Apply(rightTarget.transform);
+            if (tool != null)
+            {
+                var aimOffset = tool.GetAimOffset();
+                VRCameraRig.instance.TargetTransform = aimOffset;
+                tool.GetHandOffset().Apply(rightTarget.transform);
+            }
+            else
+            {
+                VRCameraRig.instance.TargetTransform = VRCameraRig.DefaultTargetTransform;
+                HandOffsets.RightHand.Apply(rightTarget.transform);
+            }
+
+            // Reconfigure() already knows exactly which tool is being equipped. Use it for the
+            // immediate render update, while the periodic refresh still verifies Inventory state.
+            RefreshBodyRendering(tool is Seaglide);
+            ConfigureToolHandPose(tool);
+        }
+
+        private void ConfigureToolHandPose(PlayerTool tool)
+        {
+            leftHandPoseOverride = null;
+
+            if (tool is Seaglide seaglide)
+            {
+                leftHandPoseOverride = seaglide.transform.Find(SeaglideLeftGripPath);
+            }
         }
     }
 
@@ -470,6 +563,30 @@ namespace SubmersedVR
         public static void Postfix(PlayerTool tool)
         {
             VRHands.instance?.OnToolEquipped(tool);
+        }
+    }
+
+    // Vanilla continuously updates fin renderer visibility. While Seaglide is held,
+    // the VR body is intentionally hidden, so skip that update and keep every fin
+    // renderer hidden. Once Seaglide is unequipped, vanilla takes over again.
+    [HarmonyPatch(typeof(FinsVisibilityController), "Update")]
+    public static class HideFinsWhileSeaglideHeld
+    {
+        [HarmonyPrefix]
+        public static bool Prefix(FinsVisibilityController __instance)
+        {
+            if (!VRHands.IsSeaglideHeld())
+            {
+                return true;
+            }
+
+            Renderer finRenderer = __instance.GetComponent<Renderer>();
+            if (finRenderer != null)
+            {
+                finRenderer.enabled = false;
+            }
+
+            return false;
         }
     }
 

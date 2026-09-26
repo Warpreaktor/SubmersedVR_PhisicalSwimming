@@ -119,6 +119,7 @@ namespace SubmersedVR
             Settings.PutHandReticleOnLaserPointerChanged += OnHandReticleSettingChanged;
 
             WristHud.Setup();
+            WristCompassIndicator.Setup();
 
             var compo = screenCanvas.GetComponent<uGUI_CanvasScaler>();
             if (compo != null)
@@ -156,21 +157,10 @@ namespace SubmersedVR
         // Cached Values
         private static Transform hudContent;
         private static Transform uiCamera;
-        private static Transform cachedIndexTip;
-        private static FMODAsset turnOnSound;
-        private static FMODAsset turnOffSound;
 
-        // State
+        // Kept as a field because several HUD patches read it directly.
+        // Wrist HUD visibility is no longer user-toggleable by touch, so it stays true.
         public static bool isHudOn = true;
-        private static bool touchingWrist = false;
-        private static bool prevTouchingWrist = false;
-
-        public static FMODAsset CreateFMODAsset(string eventPath)
-        {
-            FMODAsset asset = ScriptableObject.CreateInstance<FMODAsset>();
-            asset.path = eventPath;
-            return asset;
-        }
 
         // Create Wrist World Canvas
         public static void Setup()
@@ -193,27 +183,6 @@ namespace SubmersedVR
             Settings.PutBarsOnWristChanged += OnPutBarsOnHandChanged;
             Toggle(Settings.PutBarsOnWrist);
 
-            turnOnSound = CreateFMODAsset("event:/tools/flashlight/turn_on");
-            turnOffSound = CreateFMODAsset("event:/tools/flashlight/turn_off");
-        }
-
-        public static Transform GetIndexFingerTip()
-        {
-            if (cachedIndexTip != null)
-            {
-                return cachedIndexTip;
-            }
-            var animator = Player.main?.playerAnimator;
-            if (animator is Animator anim)
-            {
-                var tip = anim.transform.Find("export_skeleton/head_rig/neck/chest/clav_R/clav_R_aim/shoulder_R/hand_R/hand_R_point_base/hand_R_point_mid/hand_R_point_tip_rig");
-                if (tip != null)
-                {
-                    cachedIndexTip = tip;
-                    return tip;
-                }
-            }
-            return null;
         }
 
         public static void OnPutBarsOnHandChanged(bool isOn)
@@ -228,32 +197,16 @@ namespace SubmersedVR
             {
                 return;
             }
+
             var camPos = uiCamera.transform.position;
-            var worldRigPos = VRCameraRig.instance.rigParentTarget.position;
             var wristPos = wristTarget.transform.position;
 
             Vector3 wristDir = wristTarget.transform.TransformDirection(Vector3.forward);
             Vector3 toCam = (wristPos - camPos).normalized;
 
             float wristCamDot = Vector3.Dot(wristDir, toCam);
-            bool isFacingCamera = wristCamDot > 0.1f;
-            // DebugPanel.Show($"dot = {dot} <= {wristDir}, {toCam}");
+            // Keep the existing angle-based fade, but do not treat the wrist HUD as touchable.
             canvasGroup.alpha = Mathf.Max(wristCamDot, 0.0f);
-
-            if (isFacingCamera && GetIndexFingerTip() is Transform indexTip)
-            {
-                var uiIndexPos = indexTip.position - worldRigPos;
-                var wristDistance = Vector3.Distance(uiIndexPos, wristPos);
-                // DebugPanel.Show($"wristDistance = {wristDistance} <= uiPos{uiIndexPos}, {wristPos}");
-                const float threshold = 0.1f;
-                touchingWrist = wristDistance < threshold;
-                if (touchingWrist && !prevTouchingWrist)
-                {
-                    isHudOn = !isHudOn;
-                    Utils.PlayFMODAsset(isHudOn ? turnOnSound : turnOffSound);
-                }
-                prevTouchingWrist = wristDistance < threshold;
-            }
         }
 
         public static void Toggle(bool isOn)
@@ -264,6 +217,7 @@ namespace SubmersedVR
             }
 
             var barsPanel = uGUI.main.barsPanel;
+            isHudOn = true;
             if (isOn)
             {
                 // Move to wrist

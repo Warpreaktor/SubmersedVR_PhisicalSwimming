@@ -1,8 +1,11 @@
 ﻿using System.Reflection;
+using System.Collections.Generic;
 using HarmonyLib;
 using UnityEngine;
 using UnityEngine.Events;
 using UnityEngine.XR;
+using SubmersedVR.Music;
+using SubmersedVR.PDAInteraction;
 
 namespace SubmersedVR
 {
@@ -38,11 +41,81 @@ namespace SubmersedVR
         public static bool PutBarsOnWrist;
         public static event BooleanChanged PutBarsOnWristChanged;
 
+        public static bool PutCompassOnRightWrist = true;
+        public static event BooleanChanged PutCompassOnRightWristChanged;
+
         public static bool AreGameHapticsEnabled = false;
         public static bool AreUIHapticsEnabled = false;
         public static bool ArticulatedHands = false;
         public static bool HandBasedTurning = false;
         public static bool LeftHandBasedTurning = false;
+
+        public static bool PhysicalSwimming = true;
+
+        // Runtime-tunable physical swimming parameters. These are public so the existing generic
+        // settings serializer persists them, while the options menu can update them immediately
+        // without rebuilding or restarting the game.
+        // Fixed tracking-noise threshold. Tiny hand motion still counts, but this is no longer
+        // exposed as gameplay tuning: 0.05 m/s is low enough for precision positioning.
+        internal const float PhysicalSwimmingMinStrokeSpeed = 0.05f;
+        public static bool PhysicalSwimmingStrokeHud = false;
+        public static float PhysicalSwimmingFullStrokeSpeed = 4.20f;
+        public static float PhysicalSwimmingHandForceCoefficient = 4.05f;
+        // User-facing master stroke sensitivity. 1.0 preserves the tuned baseline; higher
+        // values require less hand speed to reach full stroke strength.
+        public static float PhysicalSwimmingStrokeSensitivity = 1.00f;
+        public static float PhysicalSwimmingMaxSingleHandContribution = 0.70f;
+        public static float PhysicalSwimmingMaxBodyVelocity = 1.50f;
+        public static float PhysicalSwimmingVelocitySmoothing = 25.0f;
+
+        // Isotropic water resistance for stored swimmer velocity. 1.10 is the current tuned
+        // default; the same damping is applied in every direction and does not alter how hand
+        // force itself is calculated.
+        public static float PhysicalSwimmingWaterResistance = 1.10f;
+
+        // Residual virtual speed below this is considered numerical drift once the hands are idle.
+        // This is a stability threshold, not a user-facing water-resistance control.
+        internal const float PhysicalSwimmingBodyVelocityDeadZone = 0.155f;
+
+        // User-facing conversion from a broadside hand sweep into body rotation.
+        // 0 keeps the full tangential stroke as sideways translation; 1 matches the tuned
+        // turning profile; higher values increase angular impulse while the same Water
+        // Resistance setting controls how long that angular momentum survives.
+        public static float PhysicalSwimmingTurningStrength = 1.00f;
+
+        // Real Subnautica motion below this is treated as stopped by reverse protection.
+        // This is an internal stability threshold, not a user-facing tuning control.
+        internal const float PhysicalSwimmingPlayerVelocityDeadZone = 0.05f;
+
+        // User-facing course responsiveness. 0 keeps strong inertia and wide turns, 1 is the
+        // tuned balanced profile, and 2 aggressively redirects stored momentum toward new strokes.
+        // It changes steering / braking response, not stroke power or maximum swimming speed.
+        public static float PhysicalSwimmingManeuverability = 1.00f;
+
+        // How strictly palm orientation must match a clean swimming stroke.
+        // 1.00 reproduces the tuned palm model that used separate dead-zone, exponent, edge-drag
+        // and back-of-hand controls. Lower values are more forgiving; higher values increasingly
+        // reward broadside palm placement and punish sloppy recovery technique.
+        public static float PhysicalSwimmingTechniqueRealism = 1.00f;
+
+        // Emergency vertical gestures are optional player-facing features, but their tested
+        // recognition thresholds are internal to PhysicalSwimming. These toggles only enable
+        // or disable the gestures as a whole.
+        public static bool PhysicalSwimmingEmergencyAscent = true;
+        public static bool PhysicalSwimmingEmergencyDive = true;
+
+        // Push Stop: an optional player-facing VR gesture. Recognition thresholds and damping are
+        // tuned internal constants; the user only chooses whether the gesture is enabled.
+        public static bool PhysicalSwimmingInertiaBrake = true;
+
+        // Fin Kick: holding both controller grip buttons adds stable head-directed
+        // propulsion, similar to gently kicking with fins. The strength is expressed as a
+        // fraction of ordinary full forward stick input.
+        public static float PhysicalSwimmingFinKickStrength = 0.25f;
+
+        // Session-only debug switch. Deliberately internal so the generic settings serializer
+        // does not persist telemetry recording across game restarts.
+        internal static bool PhysicalSwimmingDebugRecording = false;
 
         //Ambient Occlusion Settings
         public static bool AOEnabled = true;
@@ -95,6 +168,8 @@ namespace SubmersedVR
                         break;
                 }
             }
+
+            MusicPlayerSettings.Serialize(serializer);
         }
 
         internal static void AddMenu(uGUI_OptionsPanel panel)
@@ -126,6 +201,11 @@ namespace SubmersedVR
 
             panel.AddHeading(tab, "Immersion");
             panel.AddToggleOption(tab, "Put survival meter on left wrist", PutBarsOnWrist, (value) => { PutBarsOnWrist = value; PutBarsOnWristChanged(value); });
+            panel.AddToggleOption(tab, "Compass HUD on right wrist", PutCompassOnRightWrist, (value) =>
+            {
+                PutCompassOnRightWrist = value;
+                PutCompassOnRightWristChanged?.Invoke(value);
+            }, "Move the game compass from the head HUD to a circular watch-style display on the right wrist. The wrist compass appears only after the in-game Compass is available. Disable this option to restore the native head-HUD compass.");
             panel.AddToggleOption(tab, "Articulated Hands", ArticulatedHands, (value) => { ArticulatedHands = value; }, "Hands animate based on the movement of your physical hands.");
             panel.AddToggleOption(tab, "Enable Game Haptics(WIP)", AreGameHapticsEnabled, (value) => { AreGameHapticsEnabled = value; }, "Enable controller vibration while interacting with world objects.");
             panel.AddToggleOption(tab, "Enable UI Haptics(WIP)", AreUIHapticsEnabled, (value) => { AreUIHapticsEnabled = value; }, "Enable controller vibration while interacting with the User Interface.");
@@ -205,6 +285,41 @@ namespace SubmersedVR
             panel.AddSliderOption(tab, "Sensitivity", CyclopsRightDeadZone, 1f, 10f, CyclopsRightDeadZone, 1f, (value) => { CyclopsRightDeadZone = value; }, SliderLabelMode.Float, "0", "Higher value means turns more quickly");
             //panel.AddSliderOption(tab, "Sensitivity", SeamothRightSensitivity, 0f, 100f, SeamothRightSensitivity, 1f, (value) => { SeamothRightSensitivity = value; }, SliderLabelMode.Float, "0");
 #endif
+            AddPhysicalSwimmingMenu(panel);
+        }
+
+        private static void AddPhysicalSwimmingMenu(uGUI_OptionsPanel panel)
+        {
+            int tab = panel.AddTab("Physical Swimming");
+
+            panel.AddHeading(tab, "Physical Swimming");
+            panel.AddToggleOption(tab, "Enable Physical Swimming", PhysicalSwimming, (value) => { PhysicalSwimming = value; }, "Enable physical swimming controls while in the water. Hand strokes, Fin Kick and VR gestures replace the native swimming controls; holding a Seaglide switches to its dedicated two-grip motor control. Disable this option to return to normal SubmersedVR swimming controls.");
+            panel.AddToggleOption(tab, "Show Full Player Body", FullBody, (value) =>
+            {
+                FullBody = value;
+                VRHands.instance?.SetBodyRendering(value);
+            }, "Keep the player body and vest mesh visible below the HMD while using VR. Hands remain visible either way.");
+            panel.AddSliderOption(tab, "Stroke Sensitivity", PhysicalSwimmingStrokeSensitivity, 0.50f, 2.00f, 1.00f, 0.05f, (value) => { PhysicalSwimmingStrokeSensitivity = value; }, SliderLabelMode.Float, "0.00", "Controls how easily a physical hand stroke reaches full strength. Higher values require less hand speed. 1.00 is the tuned default; 2.00 reaches full strength with about half the hand speed.");
+            panel.AddSliderOption(tab, "Water Resistance", PhysicalSwimmingWaterResistance, 0.50f, 2.00f, 1.10f, 0.05f, (value) => { PhysicalSwimmingWaterResistance = value; }, SliderLabelMode.Float, "0.00", "Controls how quickly stored swimming momentum fades after a stroke. The same resistance is applied in every direction and it does not change hand-force strength.");
+            panel.AddSliderOption(tab, "Turning Strength", PhysicalSwimmingTurningStrength, 0f, 4.00f, 1.00f, 0.05f, (value) => { PhysicalSwimmingTurningStrength = value; }, SliderLabelMode.Float, "0.00", "Controls how strongly a broadside hand sweep rotates the body instead of producing sideways strafe. 0 keeps pure strafe, 1.00 is the tuned default, and higher values produce stronger physical turning. Water Resistance controls how long the resulting rotation glides.");
+            panel.AddSliderOption(tab, "Maneuverability", PhysicalSwimmingManeuverability, 0f, 2.00f, 1.00f, 0.05f, (value) => { PhysicalSwimmingManeuverability = value; }, SliderLabelMode.Float, "0.00", "Controls how readily existing swimming momentum follows a new stroke direction. Lower values preserve wider inertial turns; higher values allow sharper course changes and quicker reversals without increasing stroke power.");
+            panel.AddSliderOption(tab, "Technique Realism", PhysicalSwimmingTechniqueRealism, 0f, 2.00f, 1.00f, 0.05f, (value) => { PhysicalSwimmingTechniqueRealism = value; }, SliderLabelMode.Float, "0.00", "Controls how strongly hand orientation affects swimming technique. 1.00 is the tuned default. Higher values require cleaner palm placement and recovery: poor hand angles create less propulsion and the back of the hand creates more resistance. Maximum stroke power is unchanged.");
+            panel.AddSliderOption(tab, "Fin Kick Strength", PhysicalSwimmingFinKickStrength, 0.10f, 1.00f, 0.25f, 0.05f, (value) =>
+            {
+                PhysicalSwimmingFinKickStrength = value;
+            }, SliderLabelMode.Float, "0.00", "Controls the extra head-directed propulsion produced while both controller Grip buttons are held. 0.50 is equivalent to roughly half of full forward stick input.");
+
+            panel.AddHeading(tab, "VR Gestures");
+            panel.AddToggleOption(tab, "Emergency Ascent", PhysicalSwimmingEmergencyAscent, (value) => { PhysicalSwimmingEmergencyAscent = value; }, "Enable the quick full-speed ascent gesture. While swimming, hold both hands down beside the body, close to the body axis and separated, with the palms facing inward toward the legs/body. Hold the pose for about 0.45 seconds to engage native full-speed ascent.");
+            panel.AddToggleOption(tab, "Emergency Dive", PhysicalSwimmingEmergencyDive, (value) => { PhysicalSwimmingEmergencyDive = value; }, "Enable the quick full-speed dive gesture. Hold both hands above the head in a streamlined pose, close to the body axis and slightly separated, with the palms roughly facing each other. Hold the pose for about 0.35 seconds to engage native full-speed descent.");
+            panel.AddToggleOption(tab, "Push Stop", PhysicalSwimmingInertiaBrake, (value) => { PhysicalSwimmingInertiaBrake = value; }, "Enable the quick swimming brake gesture. Hold both hands in front of your body as if pressing against an invisible wall, with the palms facing forward, and keep the pose for about 0.20 seconds. Once confirmed, stored swimming and physical-turning inertia are rapidly damped instead of snapping instantly to zero.");
+
+            panel.AddHeading(tab, "Diagnostics");
+            panel.AddToggleOption(tab, "Telemetry Recording", PhysicalSwimmingDebugRecording, (value) =>
+            {
+                PhysicalSwimmingDebugRecording = value;
+            }, "Development-only diagnostic recording. Captures high-frequency physical-swimming telemetry and can create large CSV files during long sessions. Files are written approximately to BepInEx/logs/SubmersedVR/physical-swimming-YYYYMMDD-HHMMSS-fff.csv. A recording timer is shown on the right wrist while active. Recording is session-only and starts disabled after every game launch.");
+            panel.AddToggleOption(tab, "Show Stroke HUD", PhysicalSwimmingStrokeHud, (value) => { PhysicalSwimmingStrokeHud = value; }, "Development diagnostic overlay. Shows current hand speed and resulting stroke pull in a small translucent HUD. Intended for tuning and debugging rather than normal gameplay.");
         }
 
         internal static void AddToGraphicsOptions(uGUI_OptionsPanel panel)
@@ -255,7 +370,7 @@ namespace SubmersedVR
 
     #region Patches
 
-    // This enables the mod to save and load settings, by serializing our settings from the class above.
+    // Вызывает хук сохраняющий все настройки плагина PhisicalSwimming.
     [HarmonyPatch(typeof(GameSettings), nameof(GameSettings.SerializeSettings))]
     static class SerializeModSettings
     {
@@ -277,7 +392,7 @@ namespace SubmersedVR
         }
     }
 
-    // This hooks into the tab creation to create the options menu.
+    // Этот хук добавляет специальное меню.
     [HarmonyPatch(typeof(uGUI_OptionsPanel), nameof(uGUI_OptionsPanel.AddTabs))]
     static class CreateOptionsTab
     {
@@ -378,6 +493,89 @@ namespace SubmersedVR
         public static void Postfix(UwePostProcessingManager __instance)
         {
             __instance.SetAO(0);
+        }
+    }
+
+    // Дебаг лог
+    [HarmonyPatch]
+    static class OptionsPanelLifecycleDebug
+    {
+        static IEnumerable<MethodBase> TargetMethods()
+        {
+            string[] methodNames =
+            {
+            "Awake",
+            "Start",
+            "OnEnable",
+            "AddTabs",
+            "SelectTab",
+            "SetVisibleTab",
+            "OnDisable"
+        };
+
+            foreach (string methodName in methodNames)
+            {
+                MethodInfo method = AccessTools.Method(
+                    typeof(uGUI_OptionsPanel),
+                    methodName
+                );
+
+                if (method != null)
+                {
+                    Mod.logger.LogInfo(
+                        $"[OPTIONS LIFECYCLE] Found method: {methodName}"
+                    );
+
+                    yield return method;
+                }
+            }
+        }
+
+        static void Prefix(MethodBase __originalMethod)
+        {
+            Mod.logger.LogInfo(
+                $"[OPTIONS LIFECYCLE] >>> {__originalMethod.Name}"
+            );
+        }
+
+        static void Postfix(MethodBase __originalMethod)
+        {
+            Mod.logger.LogInfo(
+                $"[OPTIONS LIFECYCLE] <<< {__originalMethod.Name}"
+            );
+        }
+    }
+
+    // Дебаг лог
+    [HarmonyPatch(typeof(uGUI_OptionsPanel), nameof(uGUI_OptionsPanel.AddTabs))]
+    static class DebugOptionsBeforeAddTabs
+    {
+        public static void Prefix(uGUI_OptionsPanel __instance)
+        {
+            var field = AccessTools.Field(
+                typeof(uGUI_OptionsPanel),
+                "tabsContainer"
+            );
+
+            var tabsContainer = field?.GetValue(__instance) as RectTransform;
+
+            if (tabsContainer == null)
+            {
+                Mod.logger.LogInfo(
+                    "[OPTIONS BEFORE ADDTABS] tabsContainer = NULL"
+                );
+                return;
+            }
+
+            Mod.logger.LogInfo(
+                $"[OPTIONS BEFORE ADDTABS] " +
+                $"name={tabsContainer.name} " +
+                $"parent={tabsContainer.parent?.name} " +
+                $"size={tabsContainer.rect.size} " +
+                $"children={tabsContainer.childCount} " +
+                $"anchorMin={tabsContainer.anchorMin} " +
+                $"anchorMax={tabsContainer.anchorMax}"
+            );
         }
     }
 
