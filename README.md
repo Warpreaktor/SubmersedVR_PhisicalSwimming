@@ -1,4 +1,4 @@
-# SubmersedVR 1.0.0
+# SubmersedVR + Phisical Swimming 1.0.0
 
 A continuation of **SubmersedVR** for **Subnautica**, created to provide a deeper level of immersion in the game's underwater world.
 
